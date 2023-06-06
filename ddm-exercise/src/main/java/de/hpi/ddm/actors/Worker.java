@@ -4,7 +4,8 @@ import java.io.Serializable;
 import java.io.UnsupportedEncodingException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.List;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
@@ -16,6 +17,8 @@ import akka.cluster.ClusterEvent.MemberRemoved;
 import akka.cluster.ClusterEvent.MemberUp;
 import de.hpi.ddm.structures.BloomFilter;
 import de.hpi.ddm.systems.MasterSystem;
+import de.hpi.ddm.utils.CombinationGenerator;
+import de.hpi.ddm.utils.User;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -27,7 +30,7 @@ public class Worker extends AbstractLoggingActor {
 	////////////////////////
 	// Actor Construction //
 	////////////////////////
-	
+
 	public static final String DEFAULT_NAME = "worker";
 
 	public static Props props() {
@@ -38,7 +41,7 @@ public class Worker extends AbstractLoggingActor {
 		this.cluster = Cluster.get(this.context().system());
 		this.largeMessageProxy = this.context().actorOf(LargeMessageProxy.props(), LargeMessageProxy.DEFAULT_NAME);
 	}
-	
+
 	////////////////////
 	// Actor Messages //
 	////////////////////
@@ -48,7 +51,18 @@ public class Worker extends AbstractLoggingActor {
 		private static final long serialVersionUID = 8343040942748609598L;
 		private BloomFilter welcomeData;
 	}
-	
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class ComputingMessage implements Serializable {
+		private User user;
+	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class ComputePasswordMessage implements Serializable {
+		private User user;
+		private List<String> hints;
+	}
+
 	/////////////////
 	// Actor State //
 	/////////////////
@@ -57,7 +71,7 @@ public class Worker extends AbstractLoggingActor {
 	private final Cluster cluster;
 	private final ActorRef largeMessageProxy;
 	private long registrationTime;
-	
+
 	/////////////////////
 	// Actor Lifecycle //
 	/////////////////////
@@ -65,7 +79,7 @@ public class Worker extends AbstractLoggingActor {
 	@Override
 	public void preStart() {
 		Reaper.watchWithDefaultReaper(this);
-		
+
 		this.cluster.subscribe(this.self(), MemberUp.class, MemberRemoved.class);
 	}
 
@@ -85,6 +99,8 @@ public class Worker extends AbstractLoggingActor {
 				.match(MemberUp.class, this::handle)
 				.match(MemberRemoved.class, this::handle)
 				.match(WelcomeMessage.class, this::handle)
+				.match(ComputingMessage.class, this::handle)
+				.match(ComputePasswordMessage.class, this::handle)
 				// TODO: Add further messages here to share work between Master and Worker actors
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
@@ -104,33 +120,113 @@ public class Worker extends AbstractLoggingActor {
 	private void register(Member member) {
 		if ((this.masterSystem == null) && member.hasRole(MasterSystem.MASTER_ROLE)) {
 			this.masterSystem = member;
-			
+
 			this.getContext()
-				.actorSelection(member.address() + "/user/" + Master.DEFAULT_NAME)
-				.tell(new Master.RegistrationMessage(), this.self());
-			
+					.actorSelection(member.address() + "/user/" + Master.DEFAULT_NAME)
+					.tell(new Master.RegistrationMessage(), this.self());
+
 			this.registrationTime = System.currentTimeMillis();
 		}
 	}
-	
+
 	private void handle(MemberRemoved message) {
 		if (this.masterSystem.equals(message.member()))
 			this.self().tell(PoisonPill.getInstance(), ActorRef.noSender());
 	}
-	
+
 	private void handle(WelcomeMessage message) {
 		final long transmissionTime = System.currentTimeMillis() - this.registrationTime;
 		this.log().info("WelcomeMessage with " + message.getWelcomeData().getSizeInMB() + " MB data received in " + transmissionTime + " ms.");
 	}
-	
+
+	private void handle(ComputingMessage message) {
+		User u = message.getUser();
+		this.log().info("ComputingMessage received");
+		char[] a = u.getPasswordChars().toCharArray();
+		// get all permutation of password
+		List<String> crackedHints = new ArrayList<>();
+		heapPermutation(a, a.length, u.getPasswordLength(), crackedHints, u.getHashedHints());
+
+		// ============ TESTS ===========
+		//List<String> hintList = new ArrayList<>(Arrays.asList("HJKGDEFBIC","FCJADEKGHI","FAJBDIEKGH","AGCJEHFKIB","BHKICGFADJ","JIFAGKDBCE","GAHDKJBCEF","EBIKHGDAFC","DJHAFGICBE"));
+
+
+
+
+
+
+		// ============ TESTS ===========
+		// decode all hash hints and stores them in hintList
+		/*
+		List<String> hintList = zer.stream()
+				.parallel()
+				.map(hintH -> {
+					this.log().info("Finding password of hash: " + hintH);
+					return passwordPermutationList.stream()
+							.filter(p -> hash(p).equals(hintH))
+							.findFirst()
+							.orElse(null);
+				})
+				.filter(Objects::nonNull)
+				.collect(Collectors.toList());
+		*/
+		this.log().info("[WORKER] All hints decoded: " + crackedHints);
+		Master.ResultHashHintsMessage message1 = new Master.ResultHashHintsMessage(u.getHashedPassword(), crackedHints);
+		this.getContext()
+				.actorSelection(masterSystem.address() + "/user/" + Master.DEFAULT_NAME)
+				.tell(message1, this.self());
+		ComputePasswordMessage computeMsg = new ComputePasswordMessage(
+				u,
+				crackedHints
+		);
+		this.handle(computeMsg);
+
+	}
+
+	private void handle(ComputePasswordMessage message) {
+		User u = message.getUser();
+		// search for char not used in hints
+		String characters = new String(Worker.charNotUsed(message.getHints(), u.getPasswordChars()));
+		this.log().info("Characters not used in hints found: " + characters);
+
+		Optional<String> password = crackedPassword(characters, u.getPasswordLength(), u.getHashedPassword());
+		// if password's hash match with the hash given we found the password
+		password.ifPresent(p -> {
+			this.log().info("PASSWORD FOUND:" + p);
+			Master.ResultPasswordMessage message1 = new Master.ResultPasswordMessage(p);
+			this.getContext()
+					.actorSelection(masterSystem.address() + "/user/" + Master.DEFAULT_NAME)
+					.tell(message1, this.self());
+		});
+	}
+
+	public static char[] charNotUsed(List<String> hints, String passwordChars) {
+		StringBuilder charArray = new StringBuilder();
+		int i =0;
+		for (int j = 0; j < passwordChars.length(); j++) {
+			while(i < hints.size() && hints.get(i).indexOf(passwordChars.charAt(j)) >= 0) {
+				// true : i < hints length and the letter is in the hint
+				i++;
+			}
+			// exit : i >= hints length OR letter not in hint
+			if(i >= hints.size()) {
+				charArray.append(passwordChars.charAt(j));
+			}
+			i = 0;
+		}
+		char[] c =  charArray.toString().toCharArray();
+		Arrays.sort(c);
+		return c;
+	}
+
 	private String hash(String characters) {
 		try {
 			MessageDigest digest = MessageDigest.getInstance("SHA-256");
 			byte[] hashedBytes = digest.digest(String.valueOf(characters).getBytes("UTF-8"));
-			
+
 			StringBuffer stringBuffer = new StringBuffer();
-			for (int i = 0; i < hashedBytes.length; i++) {
-				stringBuffer.append(Integer.toString((hashedBytes[i] & 0xff) + 0x100, 16).substring(1));
+			for (byte hashedByte : hashedBytes) {
+				stringBuffer.append(Integer.toString((hashedByte & 0xff) + 0x100, 16).substring(1));
 			}
 			return stringBuffer.toString();
 		}
@@ -138,17 +234,20 @@ public class Worker extends AbstractLoggingActor {
 			throw new RuntimeException(e.getMessage());
 		}
 	}
-	
+
 	// Generating all permutations of an array using Heap's Algorithm
 	// https://en.wikipedia.org/wiki/Heap's_algorithm
 	// https://www.geeksforgeeks.org/heaps-algorithm-for-generating-permutations/
-	private void heapPermutation(char[] a, int size, int n, List<String> l) {
+	private void heapPermutation(char[] a, int size, int n, List<String> l, List<String> hashedHints) {
 		// If size is 1, store the obtained permutation
-		if (size == 1)
-			l.add(new String(a));
-
+		if(hashedHints.size() == l.size()) return;
+		if (size == 1) {
+			String s = new String(a);
+			if(n <= s.length()) s = s.substring(0, n);
+			if(hashedHints.contains(hash(s))) l.add(s);
+		}
 		for (int i = 0; i < size; i++) {
-			heapPermutation(a, size - 1, n, l);
+			heapPermutation(a, size - 1, n, l, hashedHints);
 
 			// If size is odd, swap first and last element
 			if (size % 2 == 1) {
@@ -164,5 +263,27 @@ public class Worker extends AbstractLoggingActor {
 				a[size - 1] = temp;
 			}
 		}
+	}
+
+	private Optional<String> crackedPassword(String characters, int size, String passwordHash) {
+		return crackedPasswordHelper(characters, size, "", passwordHash);
+	}
+
+	private Optional<String> crackedPasswordHelper(String characters, int size, String currentCombination, String passwordHash) {
+		if (currentCombination.length() == size) {
+			if (hash(currentCombination).equals(passwordHash)) {
+				return Optional.of(currentCombination);
+			}
+			return Optional.empty();
+		}
+
+		for (int i = 0; i < characters.length(); i++) {
+			char c = characters.charAt(i);
+			Optional<String> result = crackedPasswordHelper(characters, size, currentCombination + c, passwordHash);
+			if (result.isPresent()) {
+				return result;
+			}
+		}
+		return Optional.empty();
 	}
 }
