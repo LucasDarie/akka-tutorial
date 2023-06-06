@@ -63,7 +63,7 @@ public class Master extends AbstractLoggingActor {
 		// the password hash related to hints
 		private User user;
 		// all hints decrypted
-		private List<String> decodedHintsList;
+		private String[] decodedHintsList;
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
@@ -152,7 +152,7 @@ public class Master extends AbstractLoggingActor {
 					line[2],
 					Integer.parseInt(line[3]),
 					line[4],
-					Arrays.asList(Arrays.copyOfRange(line, 5, line.length))
+					Arrays.copyOfRange(line, 5, line.length)
 			);
 			Worker.ComputingMessage compute = new Worker.ComputingMessage(user);
 			this.workers.get(i%this.workers.size()).tell(compute, this.self());
@@ -170,7 +170,7 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(ResultHashHintsMessage message) {
 		// this.startTime = System.currentTimeMillis();
-		this.log().info("All hints decoded: " + message.decodedHintsList);
+		this.log().info("All hints decoded: " + Arrays.toString(message.decodedHintsList));
 	}
 
 	protected void handle(ResultPasswordMessage message) {

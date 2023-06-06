@@ -143,13 +143,15 @@ public class Worker extends AbstractLoggingActor {
 	private void handle(ComputingMessage message) {
 		User u = message.getUser();
 		this.log().info("ComputingMessage received");
+		this.log().info("Cracking password of " + message.getUser().getName() + "...");
 		char[] a = u.getPasswordChars().toCharArray();
 		// test all permutation of password and compare them to hash
 		List<String> crackedHints = new ArrayList<>();
-		heapPermutation(a, a.length, u.getPasswordLength(), crackedHints, u.getHashedHints());
+		heapPermutation(a, a.length, u.getPasswordLength(), crackedHints, Arrays.asList(u.getHashedHints()));
 
 		// send crackedHints to Master
-		Master.ResultHashHintsMessage message1 = new Master.ResultHashHintsMessage(u, crackedHints);
+		String[] crackedHintsArray = crackedHints.toArray(new String[0]);
+		Master.ResultHashHintsMessage message1 = new Master.ResultHashHintsMessage(u, crackedHintsArray);
 		this.getContext()
 				.actorSelection(masterSystem.address() + "/user/" + Master.DEFAULT_NAME)
 				.tell(message1, this.self());

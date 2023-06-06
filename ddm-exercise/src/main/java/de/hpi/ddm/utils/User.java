@@ -15,5 +15,5 @@ public class User {
     private String passwordChars;
     private int passwordLength;
     private String hashedPassword;
-    private List<String> hashedHints;
+    private String[] hashedHints;
 }
