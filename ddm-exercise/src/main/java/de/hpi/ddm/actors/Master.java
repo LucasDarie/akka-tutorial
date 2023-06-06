@@ -61,7 +61,7 @@ public class Master extends AbstractLoggingActor {
 		private static final long serialVersionUID = 7845189846513548715L;
 
 		// the password hash related to hints
-		private String passwordHash;
+		private User user;
 		// all hints decrypted
 		private List<String> decodedHintsList;
 	}
@@ -71,6 +71,7 @@ public class Master extends AbstractLoggingActor {
 		private static final long serialVersionUID = 7845189846513548716L;
 
 		// the password hash related to hints
+		private User user;
 		private String password;
 	}
 
@@ -155,8 +156,6 @@ public class Master extends AbstractLoggingActor {
 			);
 			Worker.ComputingMessage compute = new Worker.ComputingMessage(user);
 			this.workers.get(i%this.workers.size()).tell(compute, this.self());
-			//this.workers.forEach(w -> w.tell(compute, this.self()));
-			// this.log().info("WORKER " + i + "created");
 			i++;
 		}
 
@@ -171,12 +170,12 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(ResultHashHintsMessage message) {
 		// this.startTime = System.currentTimeMillis();
-		this.log().info("[MASTER] All hints decoded: " + message.decodedHintsList);
+		this.log().info("All hints decoded: " + message.decodedHintsList);
 	}
 
 	protected void handle(ResultPasswordMessage message) {
 		// this.startTime = System.currentTimeMillis();
-		this.log().info("[MASTER] PASSWORD: " + message.password);
+		this.log().info("Password of "+message.getUser().getName()+": " + message.password);
 	}
 
 	protected void terminate() {
