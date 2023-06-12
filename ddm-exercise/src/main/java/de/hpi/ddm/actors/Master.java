@@ -1,9 +1,7 @@
 package de.hpi.ddm.actors;
 
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.util.*;
 
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
@@ -34,6 +32,7 @@ public class Master extends AbstractLoggingActor {
 		this.workers = new ArrayList<>();
 		this.largeMessageProxy = this.context().actorOf(LargeMessageProxy.props(), LargeMessageProxy.DEFAULT_NAME);
 		this.welcomeData = welcomeData;
+		this.userIdSet = new HashSet<>();
 	}
 
 	////////////////////
@@ -84,6 +83,11 @@ public class Master extends AbstractLoggingActor {
 	private final List<ActorRef> workers;
 	private final ActorRef largeMessageProxy;
 	private final BloomFilter welcomeData;
+
+	// set containing user id that are being processed
+	private final Set<Integer> userIdSet;
+
+	private boolean finishedReading = false;
 
 	private long startTime;
 
@@ -138,7 +142,8 @@ public class Master extends AbstractLoggingActor {
 
 		// TODO: Stop fetching lines from the Reader once an empty BatchMessage was received; we have seen all data then
 		if (message.getLines().isEmpty()) {
-			//this.terminate();
+			this.finishedReading = true;
+			this.checkIfFinished();
 			return;
 		}
 
@@ -154,6 +159,7 @@ public class Master extends AbstractLoggingActor {
 					line[4],
 					Arrays.copyOfRange(line, 5, line.length)
 			);
+			this.userIdSet.add(user.getId());
 			Worker.ComputingMessage compute = new Worker.ComputingMessage(user);
 			this.workers.get(i%this.workers.size()).tell(compute, this.self());
 			i++;
@@ -161,7 +167,7 @@ public class Master extends AbstractLoggingActor {
 
 
 		// TODO: Send (partial) results to the Collector
-		this.collector.tell(new Collector.CollectMessage("If I had results, this would be one."), this.self());
+		// this.collector.tell(new Collector.CollectMessage("If I had results, this would be one."), this.self());
 
 		// TODO: Fetch further lines from the Reader
 		this.reader.tell(new Reader.ReadMessage(), this.self());
@@ -174,8 +180,12 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	protected void handle(ResultPasswordMessage message) {
-		// this.startTime = System.currentTimeMillis();
-		this.log().info("Password of "+message.getUser().getName()+": " + message.password);
+		// check if id of user is in the Map
+		if(this.userIdSet.contains(message.getUser().getId())) {
+			this.collector.tell(new Collector.CollectMessage("Password of "+message.getUser().getName()+": " + message.getPassword()), this.self());
+			this.userIdSet.remove(message.getUser().getId());
+		}
+		this.checkIfFinished();
 	}
 
 	protected void terminate() {
@@ -203,6 +213,13 @@ public class Master extends AbstractLoggingActor {
 		this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Worker.WelcomeMessage(this.welcomeData), this.sender()), this.self());
 
 		// TODO: Assign some work to registering workers. Note that the processing of the global task might have already started.
+	}
+
+	private void checkIfFinished() {
+		// if all data has been seen and no worker is doing suff : terminate
+		if(this.finishedReading && this.userIdSet.size() == 0) {
+			this.terminate();
+		}
 	}
 
 	protected void handle(Terminated message) {
